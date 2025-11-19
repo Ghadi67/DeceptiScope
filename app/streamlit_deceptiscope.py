@@ -3,8 +3,7 @@ import spacy
 import nltk
 from nltk.corpus import stopwords
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer as VaderAnalyzer
-
-from transformers import pipeline
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 import numpy as np
 import pandas as pd
@@ -20,12 +19,6 @@ from models.ml_emotion_baseline import (
 # new imports for charts
 import matplotlib.pyplot as plt
 
-# new import for sentence embeddings (coherence)
-try:
-    from sentence_transformers import SentenceTransformer
-    SENT_TRANSFORMERS_AVAILABLE = True
-except Exception:
-    SENT_TRANSFORMERS_AVAILABLE = False
 
 # 🔹 NEW: import our modular ML & DL models
 from models.ml_baseline import load_or_build_lr, lr_predict_proba
@@ -84,25 +77,11 @@ def get_dl_model():
     return model, vectorizer, loaded
 
 
-@st.cache_resource
-def load_sentence_encoder():
-    """Sentence embedding model for narrative coherence."""
-    if not SENT_TRANSFORMERS_AVAILABLE:
-        return None
-    try:
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-        return model
-    except Exception as e:
-        st.warning(f"Could not load sentence encoder: {e}")
-        return None
-
-
 # initialize cached models
 nlp = load_spacy()
 VADER = load_vader()
 lr_pipe, lr_loaded = get_lr_model()
 dl_model, dl_vectorizer, dl_loaded = get_dl_model()
-SENT_ENCODER = load_sentence_encoder()
 
 # -----------------------
 # Utility functions
@@ -677,26 +656,43 @@ def calculate_deception_impact(ling_feats: dict, emotions: dict,
 # ---------- NEW: narrative coherence via sentence embeddings ----------
 @st.cache_data(show_spinner=False)
 def compute_coherence_metrics(text: str) -> dict:
+    """
+    Compute narrative coherence using ONLY a TF-IDF model trained on the
+    current testimony sentences (no external pretrained model).
+
+    Steps:
+    1) Split text into sentences with spaCy.
+    2) Fit a TfidfVectorizer on these sentences.
+    3) Use the TF-IDF vectors as embeddings.
+    4) Compute cosine similarity between consecutive sentence vectors.
+    """
     doc = nlp(text)
     sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
 
-    if SENT_ENCODER is None or len(sentences) < 2:
+    # Need at least 2 sentences for pairwise similarity
+    if len(sentences) < 2:
         return {
             "sentences": sentences,
             "similarities": [],
             "avg_similarity": None,
             "min_similarity": None,
             "max_similarity": None,
-            "std_similarity": None
+            "std_similarity": None,
         }
 
-    embeddings = SENT_ENCODER.encode(sentences)
+    # Hand-made “embedding” model: TF-IDF trained only on these sentences
+    vectorizer = TfidfVectorizer()
+    tfidf_matrix = vectorizer.fit_transform(sentences)  # shape = (n_sentences, vocab)
+    embeddings = tfidf_matrix.toarray()
+
     sims = []
     for i in range(len(sentences) - 1):
         v1 = embeddings[i]
         v2 = embeddings[i + 1]
+
         denom = (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-9)
-        sims.append(float(np.dot(v1, v2) / denom))
+        sim = float(np.dot(v1, v2) / denom) if denom > 0 else 0.0
+        sims.append(sim)
 
     return {
         "sentences": sentences,
@@ -704,7 +700,7 @@ def compute_coherence_metrics(text: str) -> dict:
         "avg_similarity": float(np.mean(sims)) if sims else None,
         "min_similarity": float(np.min(sims)) if sims else None,
         "max_similarity": float(np.max(sims)) if sims else None,
-        "std_similarity": float(np.std(sims)) if sims else None
+        "std_similarity": float(np.std(sims)) if sims else None,
     }
 
 
