@@ -1,7 +1,8 @@
 # models/dl_deception_pytorch.py
 
+import json
 import os
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import joblib
 import numpy as np
@@ -11,11 +12,15 @@ from torch.utils.data import Dataset, DataLoader
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+
 from data_utils.datasets import get_training_corpus
 
 
-DL_MODEL_PATH = "models/dl_deception_model.pt"
-DL_VECTORIZER_PATH = "models/dl_vectorizer.joblib"
+DL_MODEL_PATH = "artifacts/deception/dl_deception_model.pt"
+DL_VECTORIZER_PATH = "artifacts/deception/dl_vectorizer.joblib"
+DL_METRICS_PATH = "artifacts/deception/dl_training_metrics.json"
 
 
 # ---------- Dataset wrapper ----------
@@ -55,11 +60,15 @@ def train_dl_model(
     labels: List[int],
     batch_size: int = 64,
     lr: float = 1e-3,
-    epochs: int = 5,
+    epochs: int = 8,
     device: str = None,
+    metrics_path: Optional[str] = DL_METRICS_PATH,
 ) -> Tuple[DeceptionNN, TfidfVectorizer]:
     """
-    Train our own PyTorch MLP on TF-IDF features.
+    Train our own PyTorch MLP on TF-IDF features entirely from scratch.
+    No pre-trained embeddings or third-party classifiers are used; both the
+    vectorizer and the network weights are learned solely from the provided
+    training corpus.
     """
     print("[dl_deception] Building TF-IDF features for DL model...")
     vectorizer = TfidfVectorizer(
@@ -68,15 +77,28 @@ def train_dl_model(
         min_df=1,    # allow words that appear only once
         max_df=1.0,  # don't drop anything based on document frequency
     )
-    X = vectorizer.fit_transform(texts)
-    X = X.toarray().astype(np.float32)
-    y = np.array(labels, dtype=np.float32)
+    X_train, X_val, y_train, y_val = train_test_split(
+        texts,
+        labels,
+        test_size=0.2,
+        random_state=42,
+        stratify=labels,
+    )
 
-    input_dim = X.shape[1]
+    X_train_vec = vectorizer.fit_transform(X_train)
+    X_val_vec = vectorizer.transform(X_val)
+    X_train_arr = X_train_vec.toarray().astype(np.float32)
+    X_val_arr = X_val_vec.toarray().astype(np.float32)
+    y_train_arr = np.array(y_train, dtype=np.float32)
+    y_val_arr = np.array(y_val, dtype=np.float32)
+
+    input_dim = X_train_arr.shape[1]
     print(f"[dl_deception] Input dimension = {input_dim}")
 
-    dataset = DeceptionDataset(X, y)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    train_dataset = DeceptionDataset(X_train_arr, y_train_arr)
+    val_dataset = DeceptionDataset(X_val_arr, y_val_arr)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -86,10 +108,12 @@ def train_dl_model(
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    history = {"train_loss": [], "val_loss": [], "val_f1": []}
+
     model.train()
     for epoch in range(epochs):
         epoch_loss = 0.0
-        for batch_X, batch_y in loader:
+        for batch_X, batch_y in train_loader:
             batch_X = batch_X.to(device)
             batch_y = batch_y.to(device)
 
@@ -101,8 +125,47 @@ def train_dl_model(
 
             epoch_loss += loss.item() * batch_X.size(0)
 
-        avg_loss = epoch_loss / len(dataset)
-        print(f"[dl_deception] Epoch {epoch + 1}/{epochs} - loss: {avg_loss:.4f}")
+        avg_loss = epoch_loss / len(train_dataset)
+
+        # validation
+        model.eval()
+        val_loss = 0.0
+        all_preds = []
+        all_labels = []
+        with torch.no_grad():
+            for batch_X, batch_y in val_loader:
+                batch_X = batch_X.to(device)
+                batch_y = batch_y.to(device)
+                logits = model(batch_X)
+                loss = criterion(logits, batch_y)
+                val_loss += loss.item() * batch_X.size(0)
+                probs = torch.sigmoid(logits)
+                preds = (probs >= 0.5).long().cpu().numpy()
+                all_preds.extend(preds.tolist())
+                all_labels.extend(batch_y.cpu().numpy().tolist())
+
+        avg_val_loss = val_loss / len(val_dataset)
+        val_f1 = f1_score(all_labels, all_preds)
+
+        history["train_loss"].append(avg_loss)
+        history["val_loss"].append(avg_val_loss)
+        history["val_f1"].append(val_f1)
+
+        print(
+            f"[dl_deception] Epoch {epoch + 1}/{epochs} - "
+            f"train_loss: {avg_loss:.4f}, val_loss: {avg_val_loss:.4f}, val_f1: {val_f1:.4f}"
+        )
+        model.train()
+
+    if metrics_path:
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        summary = {
+            "train_loss": history["train_loss"],
+            "val_loss": history["val_loss"],
+            "val_f1": history["val_f1"],
+        }
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
 
     return model, vectorizer
 
