@@ -4,8 +4,6 @@ import nltk
 from nltk.corpus import stopwords
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer as VaderAnalyzer
 
-from transformers import pipeline
-
 import numpy as np
 import pandas as pd
 from lime.lime_text import LimeTextExplainer
@@ -45,7 +43,7 @@ nltk.download("stopwords", quiet=True)
 # -----------------------
 # Constants & paths
 # -----------------------
-LR_MODEL_PATH = "models/lr_tfidf_lr.joblib"
+LR_MODEL_PATH = "artifacts/deception/lr_tfidf_lr.joblib"
 LIME_NUM_FEATURES = 12
 LIME_NUM_SAMPLES = 500
 
@@ -73,8 +71,8 @@ def load_vader():
 @st.cache_resource
 def get_lr_model():
     # Load or train LR on LIAR + custom dataset (implemented in models/ml_baseline.py)
-    pipe, loaded = load_or_build_lr(LR_MODEL_PATH)
-    return pipe, loaded
+    pipe, loaded, metrics = load_or_build_lr(LR_MODEL_PATH)
+    return pipe, loaded, metrics
 
 
 @st.cache_resource
@@ -100,7 +98,7 @@ def load_sentence_encoder():
 # initialize cached models
 nlp = load_spacy()
 VADER = load_vader()
-lr_pipe, lr_loaded = get_lr_model()
+lr_pipe, lr_loaded, lr_metrics = get_lr_model()
 dl_model, dl_vectorizer, dl_loaded = get_dl_model()
 SENT_ENCODER = load_sentence_encoder()
 
