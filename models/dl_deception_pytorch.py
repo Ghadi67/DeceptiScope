@@ -55,7 +55,7 @@ def train_dl_model(
     labels: List[int],
     batch_size: int = 64,
     lr: float = 1e-3,
-    epochs: int = 5,
+    epochs: int = 15,
     device: str = None,
 ) -> Tuple[DeceptionNN, TfidfVectorizer]:
     """

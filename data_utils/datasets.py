@@ -6,43 +6,71 @@ import pandas as pd
 
 
 # ---------- Paths / URLs ----------
-LIAR_TRAIN_URL = "https://raw.githubusercontent.com/Tariq60/LIAR-PLUS/master/train2.tsv"
-LIAR_VAL_URL   = "https://raw.githubusercontent.com/Tariq60/LIAR-PLUS/master/valid2.tsv"
-LIAR_TEST_URL  = "https://raw.githubusercontent.com/Tariq60/LIAR-PLUS/master/test2.tsv"
+DATASETS_DIR = "datasets"
 
-# You create this file yourself: columns: "text", "label" (0 = truthful, 1 = deceptive)
+LIAR_TRAIN_PATH = os.path.join(DATASETS_DIR, "train.tsv")
+LIAR_VAL_PATH   = os.path.join(DATASETS_DIR, "valid.tsv")   
+LIAR_TEST_PATH  = os.path.join(DATASETS_DIR, "test.tsv") 
+
+
 CUSTOM_DATASET_PATH = "data/custom_deception_dataset.csv"
 
 
 # ---------- LIAR dataset loader ----------
 def load_liar(split: str = "train") -> Tuple[List[str], List[int]]:
     """
-    Load LIAR-PLUS TSV data and map labels to binary:
+    Load LIAR or LIAR-PLUS TSV data from local files and map labels to binary:
         deceptive = {pants-fire, false, barely-true}
         truthful  = {half-true, mostly-true, true}
-
     Returns:
         texts, labels (0 = truthful, 1 = deceptive)
     """
+
+    # Pick correct file depending on split
     if split == "train":
-        url = LIAR_TRAIN_URL
+        path = LIAR_TRAIN_PATH
     elif split in ("val", "valid", "dev"):
-        url = LIAR_VAL_URL
+        path = LIAR_VAL_PATH
     elif split == "test":
-        url = LIAR_TEST_URL
+        path = LIAR_TEST_PATH
     else:
         raise ValueError(f"Unknown LIAR split: {split}")
 
-    df = pd.read_csv(url, sep="\t", header=None)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"LIAR file not found at {path}. Put train/valid/test TSVs inside 'datasets/'."
+        )
 
-    # In LIAR-PLUS, column indices can vary between repos.
-    # Common setup: label ~ col 1 or 2, text ~ col 2 or 3.
-    # Adjust if needed after checking df.head().
-    # Here we assume:
-    #   label in column 2
-    #   text  in column 3
-    label_col = 2
-    text_col = 3
+    # Read TSV with no header
+    df = pd.read_csv(path, sep="\t", header=None)
+
+    # Try different possible column index configurations
+    # (because LIAR and LIAR-PLUS differ)
+    possible_label_cols = [1, 2]  # which column label might be in
+    possible_text_cols  = [2, 3]  # which column text might be in
+
+    label_col = None
+    text_col  = None
+
+    # Try to detect proper columns automatically
+    for lc in possible_label_cols:
+        if lc < df.shape[1]:
+            first_val = str(df.iloc[0, lc]).lower()
+            if any(x in first_val for x in ["true", "false", "pants", "barely"]):
+                label_col = lc
+                break
+
+    for tc in possible_text_cols:
+        if tc < df.shape[1]:
+            # A text column tends to be long
+            if df.iloc[0, tc] and len(str(df.iloc[0, tc])) > 10:
+                text_col = tc
+                break
+
+    if label_col is None or text_col is None:
+        raise RuntimeError(
+            f"Could not detect label/text columns in {path}. Please check the file structure."
+        )
 
     label_map = {
         "pants-fire": 1,
@@ -58,8 +86,8 @@ def load_liar(split: str = "train") -> Tuple[List[str], List[int]]:
     }
 
     raw_labels = df[label_col].astype(str).str.strip().str.lower()
-    texts = df[text_col].astype(str).tolist()
-    labels = [label_map.get(lbl, 0) for lbl in raw_labels]
+    texts      = df[text_col].astype(str).tolist()
+    labels     = [label_map.get(lbl, 0) for lbl in raw_labels]
 
     return texts, labels
 
